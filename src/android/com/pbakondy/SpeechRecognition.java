@@ -31,23 +31,28 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import android.os.Handler;
+import android.os.Looper;
+
 public class SpeechRecognition extends CordovaPlugin {
 
   private static final String LOG_TAG = "SpeechRecognition";
 
   private static final int REQUEST_CODE_PERMISSION = 2001;
   private static final int REQUEST_CODE_SPEECH = 2002;
+
   private static final String IS_RECOGNITION_AVAILABLE = "isRecognitionAvailable";
   private static final String START_LISTENING = "startListening";
   private static final String STOP_LISTENING = "stopListening";
   private static final String GET_SUPPORTED_LANGUAGES = "getSupportedLanguages";
   private static final String HAS_PERMISSION = "hasPermission";
   private static final String REQUEST_PERMISSION = "requestPermission";
+
+  // android.speech.extra.MAX_RESULTS
   private static final int MAX_RESULTS = 5;
+
   private static final String NOT_AVAILABLE = "Speech recognition service is not available on the system.";
   private static final String MISSING_PERMISSION = "Missing permission";
-
-  private JSONArray mLastPartialResults = new JSONArray();
 
   private static final String RECORD_AUDIO_PERMISSION = Manifest.permission.RECORD_AUDIO;
 
@@ -74,6 +79,7 @@ public class SpeechRecognition extends CordovaPlugin {
         recognizer.setRecognitionListener(listener);
       }
     });
+
   }
 
   @Override
@@ -112,25 +118,15 @@ public class SpeechRecognition extends CordovaPlugin {
           prompt = null;
         }
 
-        mLastPartialResults = new JSONArray();
-        Boolean showPartial = args.optBoolean(3, false);
         Boolean showPopup = args.optBoolean(4, true);
-        startListening(lang, matches, prompt,showPartial, showPopup);
+
+        startListening(lang, matches, prompt, showPopup);
 
         return true;
       }
 
       if (STOP_LISTENING.equals(action)) {
-        final CallbackContext callbackContextStop = this.callbackContext;
-        view.post(new Runnable() {
-          @Override
-          public void run() {
-            if(recognizer != null) {
-              recognizer.stopListening();
-            }
-            callbackContextStop.success();
-          }
-        });
+        stop();
         return true;
       }
 
@@ -161,8 +157,8 @@ public class SpeechRecognition extends CordovaPlugin {
     return SpeechRecognizer.isRecognitionAvailable(context);
   }
 
-  private void startListening(String language, int matches, String prompt, final Boolean showPartial, Boolean showPopup) {
-    Log.d(LOG_TAG, "startListening() language: " + language + ", matches: " + matches + ", prompt: " + prompt + ", showPartial: " + showPartial + ", showPopup: " + showPopup);
+  private void startListening(String language, int matches, String prompt, Boolean showPopup) {
+    Log.d(LOG_TAG, "startListening() language: " + language + ", matches: " + matches + ", prompt: " + prompt + ", showPopup: " + showPopup);
 
     final Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
     intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -171,8 +167,6 @@ public class SpeechRecognition extends CordovaPlugin {
     intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, matches);
     intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE,
             activity.getPackageName());
-    intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, showPartial);
-    intent.putExtra("android.speech.extra.DICTATION_MODE", showPartial);
 
     if (prompt != null) {
       intent.putExtra(RecognizerIntent.EXTRA_PROMPT, prompt);
@@ -181,13 +175,37 @@ public class SpeechRecognition extends CordovaPlugin {
     if (showPopup) {
       cordova.startActivityForResult(this, intent, REQUEST_CODE_SPEECH);
     } else {
-      view.post(new Runnable() {
+
+	    Handler loopHandler = new Handler(Looper.getMainLooper());
+        loopHandler.post(new Runnable() {
+
+            @Override
+            public void run() {
+                recognizer.startListening(intent);
+            }
+
+        });
+		PluginResult res = new PluginResult(PluginResult.Status.NO_RESULT);
+        res.setKeepCallback(true);
+        this.callbackContext.sendPluginResult(res);
+      /*view.post(new Runnable() {
         @Override
         public void run() {
           recognizer.startListening(intent);
         }
-      });
+      });*/
     }
+  }
+
+  private void stop() {
+      Handler loopHandler = new Handler(Looper.getMainLooper());
+      loopHandler.post(new Runnable() {
+
+          @Override
+          public void run() {
+              recognizer.stopListening();
+          }  
+      });
   }
 
   private void getSupportedLanguages() {
@@ -289,23 +307,7 @@ public class SpeechRecognition extends CordovaPlugin {
     }
 
     @Override
-    public void onPartialResults(Bundle bundle) {
-      ArrayList<String> matches = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-      Log.d(LOG_TAG, "SpeechRecognitionListener partialResults: " + matches);
-      JSONArray matchesJSON = new JSONArray(matches);
-      try {
-        if (matches != null
-                && matches.size() > 0
-                        && !mLastPartialResults.equals(matchesJSON)) {
-          mLastPartialResults = matchesJSON;
-          PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, matchesJSON);
-          pluginResult.setKeepCallback(true);
-          callbackContext.sendPluginResult(pluginResult);
-        }
-      } catch (Exception e) {
-        e.printStackTrace();
-        callbackContext.error(e.getMessage());
-      }
+    public void onPartialResults(Bundle partialResults) {
     }
 
     @Override
@@ -317,6 +319,7 @@ public class SpeechRecognition extends CordovaPlugin {
     public void onResults(Bundle results) {
       ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
       Log.d(LOG_TAG, "SpeechRecognitionListener results: " + matches);
+
       try {
         JSONArray jsonMatches = new JSONArray(matches);
         callbackContext.success(jsonMatches);
@@ -352,6 +355,14 @@ public class SpeechRecognition extends CordovaPlugin {
           message = "No match";
           break;
         case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+          view.post(new Runnable() {
+            @Override
+            public void run() {
+              recognizer = SpeechRecognizer.createSpeechRecognizer(activity);
+              SpeechRecognitionListener listener = new SpeechRecognitionListener();
+              recognizer.setRecognitionListener(listener);
+            }
+          });
           message = "RecognitionService busy";
           break;
         case SpeechRecognizer.ERROR_SERVER:
